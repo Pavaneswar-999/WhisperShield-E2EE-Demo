@@ -1,0 +1,13 @@
+{
+  "name": "whisper-shield-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm --prefix whisper-shield/server install && npm --prefix whisper-shield/client install",
+    "dev:server": "npm --prefix whisper-shield/server run dev",
+    "dev:client": "npm --prefix whisper-shield/client run dev",
+    "test:client": "npm --prefix whisper-shield/client run test",
+    "build:client": "npm --prefix whisper-shield/client run build",
+    "build:server": "npm --prefix whisper-shield/server run build"
+  }
+}
