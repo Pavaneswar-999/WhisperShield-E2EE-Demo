@@ -12,7 +12,9 @@ import {
   Copy,
   Check,
   Zap,
-  Lock
+  Lock,
+  AlertTriangle,
+  AlertOctagon
 } from 'lucide-react';
 
 export const SafetyNumbersView: React.FC = () => {
@@ -25,6 +27,12 @@ export const SafetyNumbersView: React.FC = () => {
 
   const [selectedPeerId, setSelectedPeerId] = useState<string>('bob');
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
+  const [isSimulatingAttack, setIsSimulatingAttack] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('mitm') === 'true';
+    }
+    return false;
+  });
   const [benchmarkMs, setBenchmarkMs] = useState<number | null>(null);
   const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -34,9 +42,17 @@ export const SafetyNumbersView: React.FC = () => {
     const calculate = async () => {
       if (!currentUser) return;
       try {
-        const peerBundle = await TransportEngine.fetchPreKeyBundle(selectedPeerId);
         const myIK = base64ToUint8Array(currentUser.identityDHKeyPair.publicKey);
-        const peerIK = base64ToUint8Array(peerBundle.identityKey);
+        let peerIK: Uint8Array;
+
+        if (isSimulatingAttack) {
+          // Attacker substituted peer's key with adversarial entropy
+          peerIK = new Uint8Array(32);
+          peerIK.fill(0xee);
+        } else {
+          const peerBundle = await TransportEngine.fetchPreKeyBundle(selectedPeerId);
+          peerIK = base64ToUint8Array(peerBundle.identityKey);
+        }
 
         const sn = await SafetyNumber.generate(myIK, peerIK);
         setSafetyNumber(sn);
@@ -46,7 +62,7 @@ export const SafetyNumbersView: React.FC = () => {
             width: 200,
             margin: 1,
             color: {
-              dark: '#285C70',
+              dark: isSimulatingAttack ? '#DC2626' : '#285C70',
               light: '#FFFFFF'
             }
           });
@@ -58,7 +74,7 @@ export const SafetyNumbersView: React.FC = () => {
     };
 
     calculate();
-  }, [currentUser, selectedPeerId]);
+  }, [currentUser, selectedPeerId, isSimulatingAttack]);
 
   const runBenchmark = async () => {
     if (!currentUser) return;
@@ -129,11 +145,50 @@ export const SafetyNumbersView: React.FC = () => {
 
           <div className="flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-neutral-400">
             <span>Status:</span>
-            <span className={`font-semibold ${isSafetyNumberVerified ? 'text-[#285C70]' : 'text-amber-600 dark:text-amber-400'}`}>
-              {isSafetyNumberVerified ? '✓ Identity Confirmed' : '! Pending Verification'}
+            <span className={`font-semibold ${isSimulatingAttack ? 'text-rose-600 dark:text-rose-400 font-black' : isSafetyNumberVerified ? 'text-[#285C70]' : 'text-amber-600 dark:text-amber-400'}`}>
+              {isSimulatingAttack ? '🚨 MITM MISMATCH DETECTED' : isSafetyNumberVerified ? '✓ Identity Confirmed' : '! Pending Verification'}
             </span>
           </div>
         </div>
+
+        {/* MitM Adversary Simulation Control Bar */}
+        <div className="p-3.5 sm:p-4 rounded-2xl bg-white/70 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-2 text-xs font-sans text-slate-600 dark:text-neutral-300">
+            <AlertOctagon className={`w-4 h-4 shrink-0 ${isSimulatingAttack ? 'text-rose-600 animate-spin' : 'text-[#60899B]'}`} />
+            <span><strong>Adversarial Testbed:</strong> Simulate an active Man-in-the-Middle key substitution on @{selectedPeerId}&apos;s channel</span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsSimulatingAttack(!isSimulatingAttack)}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold border transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 ${
+              isSimulatingAttack
+                ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-md animate-pulse'
+                : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-300 border-rose-500/30'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>{isSimulatingAttack ? 'Restore Verified Key' : 'Simulate Key Substitution'}</span>
+          </button>
+        </div>
+
+        {/* Security Alert Banner when Attack is active */}
+        {isSimulatingAttack && (
+          <div className="p-5 rounded-2xl bg-rose-500/15 dark:bg-rose-950/50 border-2 border-rose-500 text-rose-900 dark:text-rose-200 space-y-2 shadow-lg animate-in fade-in duration-300">
+            <div className="flex items-center gap-2 font-black text-sm uppercase tracking-wide text-rose-700 dark:text-rose-300">
+              <AlertOctagon className="w-5 h-5 text-rose-600 shrink-0" />
+              <span>Security Alert: Man-in-the-Middle Key Substitution Detected</span>
+            </div>
+            <p className="text-xs leading-relaxed text-rose-950/90 dark:text-rose-100/90 font-sans">
+              An unauthorized public key was injected into the key agreement channel for @{selectedPeerId}. Because the underlying Curve25519 public keys do not match:
+            </p>
+            <ul className="text-xs list-disc list-inside space-y-1 font-mono text-rose-900 dark:text-rose-200 pl-1">
+              <li>The 5,200-round SHA-512 derivation has produced an entirely divergent 60-digit sequence.</li>
+              <li>The optical QR matrix does not match @{selectedPeerId}&apos;s authentic visual fingerprint.</li>
+              <li>Any message encrypted under this rogue key cannot be decrypted by @{selectedPeerId}.</li>
+            </ul>
+          </div>
+        )}
 
         {/* Main 60-Digit Fingerprint & QR Matrix */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -152,10 +152,28 @@ const SwitchUserModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
 
 const MainLayout: React.FC = () => {
   const { currentUser, loginAs } = useChat();
-  const [activeTab, setActiveTab] = useState<ActiveTab>('messenger');
-  const [isSwitchUserOpen, setIsSwitchUserOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const tab = p.get('tab');
+      if (tab === 'protocol' || tab === 'labs' || tab === 'safety' || tab === 'relay') {
+        return tab as ActiveTab;
+      }
+    }
+    return 'messenger';
+  });
+  const [isSwitchUserOpen, setIsSwitchUserOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      return p.get('switchUser') === 'true';
+    }
+    return false;
+  });
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('theme') === 'dark') return true;
+      if (p.get('theme') === 'light') return false;
       const stored = localStorage.getItem('whispershield_theme');
       return stored === 'dark';
     }

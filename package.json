@@ -8,6 +8,8 @@
     "dev:client": "npm --prefix whisper-shield/client run dev",
     "test:client": "npm --prefix whisper-shield/client run test",
     "build:client": "npm --prefix whisper-shield/client run build",
-    "build:server": "npm --prefix whisper-shield/server run build"
+    "build:server": "npm --prefix whisper-shield/server run build",
+    "build": "npm --prefix whisper-shield/client install && npm --prefix whisper-shield/client run build && npm --prefix whisper-shield/server install && npm --prefix whisper-shield/server run build",
+    "start": "npm --prefix whisper-shield/server start"
   }
 }

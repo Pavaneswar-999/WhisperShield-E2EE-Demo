@@ -47,8 +47,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isSafetyNumberVerified, setIsSafetyNumberVerified] = useState<boolean>(false);
   const [opkRemainingCount, setOpkRemainingCount] = useState<number>(0);
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
-  const [isSafetyModalOpen, setIsSafetyModalOpen] = useState<boolean>(false);
+  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('inspect') === 'true';
+    }
+    return false;
+  });
+  const [isSafetyModalOpen, setIsSafetyModalOpen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('safetyModal') === 'true';
+    }
+    return false;
+  });
 
   const transportRef = useRef<TransportEngine>(new TransportEngine());
   const activeSessionRef = useRef<DoubleRatchetSession | null>(null);
@@ -224,6 +234,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     },
     []
   );
+
+  // Auto-select peer from URL query parameter (?peer=bob) if provided
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const peer = p.get('peer');
+      if (peer && currentUser) {
+        const timer = setTimeout(() => {
+          selectPeer(peer);
+        }, 400);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [currentUser, selectPeer]);
 
   // Verify or unverify Safety Number
   const verifySafetyNumber = useCallback(
@@ -459,6 +483,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     },
     []
   );
+
+  // Auto-select peer from URL query parameter (?peer=bob) if provided
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const peer = p.get('peer');
+      if (peer && currentUser) {
+        const timer = setTimeout(() => {
+          selectPeer(peer);
+        }, 400);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [currentUser, selectPeer]);
 
   // Simulate Post-Compromise Security (Break-in Recovery)
   const simulateStateCompromise = useCallback(() => {

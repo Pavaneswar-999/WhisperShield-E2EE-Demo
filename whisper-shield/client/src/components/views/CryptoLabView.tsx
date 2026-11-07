@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as tweetnacl from 'tweetnacl';
 import { X3DHEngine } from '../../crypto/x3dh';
 import { DoubleRatchetSession } from '../../crypto/ratchet';
@@ -81,6 +81,19 @@ export const CryptoLabView: React.FC = () => {
       setX3dhRunning(false);
     }
   };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('autoRun') === 'true' || p.get('tab') === 'labs') {
+        runX3DHDemo();
+      }
+      if (p.get('tamper') === 'true') {
+        setTamperBit(true);
+        testAeadDecryption();
+      }
+    }
+  }, []);
 
   // --- Lab 2: Interactive Double Ratchet Stepper State ---
   const [ratchetSessionA, setRatchetSessionA] = useState<DoubleRatchetSession | null>(null);

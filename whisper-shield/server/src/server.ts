@@ -1,6 +1,9 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RelayDatabase } from './db.js';
 import type { PreKeyBundle, InboundRelayEnvelope } from './types.js';
@@ -213,6 +216,21 @@ function broadcastUserStatus(userId: string, isOnline: boolean): void {
       client.send(payload);
     }
   }
+}
+
+// --- Serve Static Client Assets (Production / Cloud Deployment) ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const clientDistPath = path.resolve(__dirname, '../../client/dist');
+
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+  app.get('*', (req: Request, res: Response, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(clientDistPath, 'index.html'));
+  });
 }
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;

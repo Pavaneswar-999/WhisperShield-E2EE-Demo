@@ -27,8 +27,26 @@ export type PresenceUpdateHandler = (data: {
 }) => void;
 
 export class TransportEngine {
-  private static apiUrl = 'http://localhost:8080/api';
-  private static wsUrl = 'ws://localhost:8080';
+  private static get apiUrl(): string {
+    if (typeof window !== 'undefined') {
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (!isLocal) {
+        return `${window.location.protocol}//${window.location.host}/api`;
+      }
+    }
+    return 'http://localhost:8080/api';
+  }
+
+  private static get wsUrl(): string {
+    if (typeof window !== 'undefined') {
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (!isLocal) {
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${wsProto}//${window.location.host}`;
+      }
+    }
+    return 'ws://localhost:8080';
+  }
 
   private ws: WebSocket | null = null;
   private currentUserId: string | null = null;
