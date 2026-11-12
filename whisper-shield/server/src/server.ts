@@ -9,8 +9,22 @@ import { RelayDatabase } from './db.js';
 import type { PreKeyBundle, InboundRelayEnvelope } from './types.js';
 
 const app = express();
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
+
+const USER_ID_PATTERN = /^[a-z0-9_-]{1,32}$/;
+function normalizeValidUserId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  return USER_ID_PATTERN.test(normalized) ? normalized : null;
+}
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -28,15 +42,17 @@ app.get('/api/health', (_req: Request, res: Response): void => {
 
 app.post('/api/keys/register', (req: Request, res: Response): void => {
   const bundle: PreKeyBundle = req.body;
-  if (!bundle.userId || !bundle.identityKey || !bundle.signedPreKey || !bundle.signedPreKeySig) {
+  const validUserId = normalizeValidUserId(bundle?.userId);
+  if (!validUserId || !bundle?.identityKey || !bundle?.signedPreKey || !bundle?.signedPreKeySig) {
     res.status(400).json({
-      error: 'Incomplete cryptographic bundle provided. userId, identityKey, signedPreKey, and signedPreKeySig are required.'
+      error:
+        'Incomplete or invalid cryptographic bundle. Valid userId (1-32 alphanumeric/_/-), identityKey, signedPreKey, and signedPreKeySig are required.'
     });
     return;
   }
 
   try {
-    db.registerUser(bundle);
+    db.registerUser({ ...bundle, userId: validUserId });
     res.status(200).json({
       status: 'success',
       message: 'Cryptographic prekey bundle registered successfully.'
@@ -48,7 +64,11 @@ app.post('/api/keys/register', (req: Request, res: Response): void => {
 });
 
 app.get('/api/keys/:userId', (req: Request, res: Response): void => {
-  const { userId } = req.params;
+  const userId = normalizeValidUserId(req.params.userId);
+  if (!userId) {
+    res.status(400).json({ error: 'Invalid userId format.' });
+    return;
+  }
   try {
     const bundle = db.getUserBundle(userId);
     if (!bundle) {
@@ -63,9 +83,10 @@ app.get('/api/keys/:userId', (req: Request, res: Response): void => {
 });
 
 app.post('/api/keys/refill', (req: Request, res: Response): void => {
-  const { userId, oneTimePreKeys } = req.body;
+  const userId = normalizeValidUserId(req.body?.userId);
+  const oneTimePreKeys = req.body?.oneTimePreKeys;
   if (!userId || !Array.isArray(oneTimePreKeys) || oneTimePreKeys.length === 0) {
-    res.status(400).json({ error: 'userId and non-empty oneTimePreKeys array are required.' });
+    res.status(400).json({ error: 'Valid userId and non-empty oneTimePreKeys array are required.' });
     return;
   }
 
@@ -79,6 +100,43 @@ app.post('/api/keys/refill', (req: Request, res: Response): void => {
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: `Failed to refill prekeys: ${errorMsg}` });
+  }
+});
+
+// HTTP delivery fallback if WebSocket is momentarily reconnecting
+app.post('/api/messages/send', (req: Request, res: Response): void => {
+  const senderId = normalizeValidUserId(req.body?.senderId);
+  const recipientId = normalizeValidUserId(req.body?.recipientId);
+  const encryptedEnvelope = req.body?.encryptedEnvelope;
+  const timestamp = typeof req.body?.timestamp === 'number' ? req.body.timestamp : Date.now();
+
+  if (!senderId || !recipientId || !encryptedEnvelope) {
+    res.status(400).json({ error: 'Valid senderId, recipientId, and encryptedEnvelope are required.' });
+    return;
+  }
+
+  try {
+    const recipientSocket = connectedClients.get(recipientId);
+    if (recipientSocket && recipientSocket.readyState === WebSocket.OPEN) {
+      recipientSocket.send(
+        JSON.stringify({
+          type: 'message',
+          senderId,
+          recipientId,
+          encryptedEnvelope,
+          timestamp,
+          wasQueuedOffline: false
+        })
+      );
+      res.status(200).json({ status: 'delivered', timestamp: Date.now() });
+      return;
+    }
+
+    db.enqueueOfflineMessage(recipientId, senderId, JSON.stringify(encryptedEnvelope));
+    res.status(200).json({ status: 'queued_offline', timestamp: Date.now() });
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: `Failed to relay message: ${errorMsg}` });
   }
 });
 
@@ -102,14 +160,18 @@ app.get('/api/users', (_req: Request, res: Response): void => {
 wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
   const host = req.headers.host || 'localhost:8080';
   const url = new URL(req.url || '', `http://${host}`);
-  const userId = url.searchParams.get('userId');
+  const userId = normalizeValidUserId(url.searchParams.get('userId'));
 
   if (!userId) {
-    ws.close(1008, 'Authentication parameter userId is required.');
+    ws.close(1008, 'Valid authentication parameter userId is required.');
     return;
   }
 
+  const previousSocket = connectedClients.get(userId);
   connectedClients.set(userId, ws);
+  if (previousSocket && previousSocket !== ws && previousSocket.readyState === WebSocket.OPEN) {
+    previousSocket.close(4000, 'Replaced by newer connection');
+  }
 
   // Notify peer status change
   broadcastUserStatus(userId, true);
@@ -146,14 +208,21 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
       }
 
       if (envelope.type === 'message') {
-        const recipientSocket = connectedClients.get(envelope.recipientId);
+        // Bind sender strictly to authenticated socket userId to prevent sender spoofing
+        const normalizedSenderId = userId;
+        const normalizedRecipientId = normalizeValidUserId(envelope.recipientId);
+        if (!normalizedRecipientId) {
+          ws.send(JSON.stringify({ error: 'Invalid recipientId.' }));
+          return;
+        }
+        const recipientSocket = connectedClients.get(normalizedRecipientId);
 
         if (recipientSocket && recipientSocket.readyState === WebSocket.OPEN) {
           recipientSocket.send(
             JSON.stringify({
               type: 'message',
-              senderId: envelope.senderId,
-              recipientId: envelope.recipientId,
+              senderId: normalizedSenderId,
+              recipientId: normalizedRecipientId,
               encryptedEnvelope: envelope.encryptedEnvelope,
               timestamp: envelope.timestamp || Date.now(),
               wasQueuedOffline: false
@@ -164,7 +233,7 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
           ws.send(
             JSON.stringify({
               type: 'receipt',
-              recipientId: envelope.recipientId,
+              recipientId: normalizedRecipientId,
               status: 'delivered',
               timestamp: Date.now()
             })
@@ -172,15 +241,15 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
         } else {
           // Recipient is offline: store zero-knowledge encrypted envelope in SQLite queue
           db.enqueueOfflineMessage(
-            envelope.recipientId,
-            envelope.senderId,
+            normalizedRecipientId,
+            normalizedSenderId,
             JSON.stringify(envelope.encryptedEnvelope)
           );
 
           ws.send(
             JSON.stringify({
               type: 'receipt',
-              recipientId: envelope.recipientId,
+              recipientId: normalizedRecipientId,
               status: 'queued_offline',
               timestamp: Date.now()
             })
@@ -193,13 +262,18 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
   });
 
   ws.on('close', () => {
-    connectedClients.delete(userId);
-    broadcastUserStatus(userId, false);
+    if (connectedClients.get(userId) === ws) {
+      connectedClients.delete(userId);
+      broadcastUserStatus(userId, false);
+    }
   });
 
   ws.on('error', (err) => {
     console.error(`WebSocket error for ${userId}:`, err);
-    connectedClients.delete(userId);
+    if (connectedClients.get(userId) === ws) {
+      connectedClients.delete(userId);
+      broadcastUserStatus(userId, false);
+    }
   });
 });
 

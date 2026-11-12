@@ -159,6 +159,12 @@ export class StorageEngine {
     return all.filter((pk) => !pk.consumed).length;
   }
 
+  public static async getUnconsumedPreKeyPublicKeys(): Promise<string[]> {
+    const db = await getDatabase();
+    const all = await db.getAll('prekeys');
+    return all.filter((pk) => !pk.consumed).map((pk) => pk.keyPair.publicKey);
+  }
+
   public static async getPreKeyMap(): Promise<Map<string, { publicKey: string; secretKey: string }>> {
     const db = await getDatabase();
     const all = await db.getAll('prekeys');

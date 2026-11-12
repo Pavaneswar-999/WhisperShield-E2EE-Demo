@@ -17,20 +17,36 @@ export const RelayMonitorView: React.FC = () => {
   const [users, setUsers] = useState<PeerUserInfo[]>([]);
   const [healthData, setHealthData] = useState<{ status: string; uptime: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
+  const [isRefilling, setIsRefilling] = useState(false);
 
   const fetchRelayState = async () => {
     setIsRefreshing(true);
     try {
-      const userList = await TransportEngine.fetchRegisteredUsers();
-      setUsers(userList);
-
-      const healthRes = await fetch('http://localhost:8080/api/health').catch(() => null);
-      if (healthRes && healthRes.ok) {
-        const json = await healthRes.json();
-        setHealthData(json);
+      const [userList, health] = await Promise.all([
+        TransportEngine.fetchRegisteredUsers().catch(() => null),
+        TransportEngine.fetchHealth()
+      ]);
+      if (userList) {
+        setUsers(userList);
       }
+      if (health) {
+        setHealthData(health);
+      }
+      setLastSynced(new Date().toLocaleTimeString());
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+  const handleRefillOPKs = async () => {
+    if (isRefilling) return;
+    setIsRefilling(true);
+    try {
+      await refillOPKs(50);
+      await fetchRelayState();
+    } finally {
+      setIsRefilling(false);
     }
   };
 
@@ -58,15 +74,22 @@ export const RelayMonitorView: React.FC = () => {
             </p>
           </div>
 
-          <LiquidButton
-            variant="brand"
-            size="md"
-            onClick={fetchRelayState}
-            disabled={isRefreshing}
-            icon={RefreshCw}
-          >
-            <span>Refresh State</span>
-          </LiquidButton>
+          <div className="flex flex-col items-end gap-1">
+            <LiquidButton
+              variant="brand"
+              size="md"
+              onClick={fetchRelayState}
+              disabled={isRefreshing}
+              icon={RefreshCw}
+            >
+              <span>{isRefreshing ? 'Refreshing...' : 'Refresh State'}</span>
+            </LiquidButton>
+            {lastSynced && (
+              <span className="text-[10px] font-mono text-slate-400 dark:text-neutral-500">
+                Synced at {lastSynced}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Relay Metric Cards */}
@@ -76,11 +99,15 @@ export const RelayMonitorView: React.FC = () => {
               <span>Relay Status</span>
               <Radio className="w-4 h-4 text-[#285C70] animate-pulse" />
             </div>
-            <div className="text-xl font-bold text-[#285C70]">
-              {isConnected ? 'ONLINE (200 OK)' : 'DISCONNECTED'}
+            <div className={`text-xl font-bold ${isConnected ? 'text-[#285C70]' : 'text-rose-500'}`}>
+              {healthData?.status === 'healthy'
+                ? 'ONLINE (200 OK)'
+                : isConnected
+                ? 'SOCKET LIVE'
+                : 'DISCONNECTED'}
             </div>
-            <span className="text-[10px] text-slate-400 block font-sans">
-              WebSocket ws://localhost:8080
+            <span className="text-[10px] text-slate-400 block font-sans truncate">
+              WebSocket {TransportEngine.getWsUrl()}
             </span>
           </div>
 
@@ -120,10 +147,11 @@ export const RelayMonitorView: React.FC = () => {
             </div>
             <button
               type="button"
-              onClick={() => refillOPKs(50)}
-              className="text-[10px] text-[#285C70] hover:underline block font-sans"
+              onClick={handleRefillOPKs}
+              disabled={isRefilling}
+              className="text-[10px] text-[#285C70] hover:underline block font-sans disabled:opacity-50 cursor-pointer"
             >
-              + Refill 50 OPKs now
+              {isRefilling ? 'Generating & uploading 50 OPKs...' : '+ Refill 50 OPKs now'}
             </button>
           </div>
         </div>
@@ -187,7 +215,7 @@ export const RelayMonitorView: React.FC = () => {
                       <span className="font-bold text-slate-900 dark:text-neutral-100">
                         {u.remainingOPKs}
                       </span>
-                      <span className="text-slate-400 text-[10px]"> / 60</span>
+                      <span className="text-slate-400 text-[10px]"> OPKs</span>
                     </td>
                   </tr>
                 ))}

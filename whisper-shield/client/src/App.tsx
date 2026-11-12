@@ -16,11 +16,14 @@ const SwitchUserModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
   isOpen,
   onClose
 }) => {
-  const { loginAs, currentUser } = useChat();
+  const { loginAs, currentUser, allPeers } = useChat();
   const [customUsername, setCustomUsername] = useState('');
   const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;
+
+  const alicePeer = allPeers.find((p) => p.userId === 'alice');
+  const bobPeer = allPeers.find((p) => p.userId === 'bob');
 
   const handleSelectUser = async (id: string) => {
     setLoading(true);
@@ -34,8 +37,9 @@ const SwitchUserModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
 
   const handleCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (customUsername.trim()) {
-      handleSelectUser(customUsername.trim().toLowerCase());
+    const cleaned = customUsername.trim().replace(/^@+/, '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (cleaned) {
+      handleSelectUser(cleaned.slice(0, 32));
     }
   };
 
@@ -86,7 +90,13 @@ const SwitchUserModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
                 </div>
                 <div>
                   <span className="font-mono text-xs font-bold block">@alice</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Initiator</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">
+                    {alicePeer?.isOnline
+                      ? 'Online on Relay'
+                      : alicePeer
+                      ? 'Registered (Offline)'
+                      : 'Preset Persona'}
+                  </span>
                 </div>
               </div>
               <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
@@ -108,7 +118,13 @@ const SwitchUserModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
                 </div>
                 <div>
                   <span className="font-mono text-xs font-bold block">@bob</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Responder</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">
+                    {bobPeer?.isOnline
+                      ? 'Online on Relay'
+                      : bobPeer
+                      ? 'Registered (Offline)'
+                      : 'Preset Persona'}
+                  </span>
                 </div>
               </div>
               <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
@@ -204,12 +220,22 @@ const MainLayout: React.FC = () => {
   };
 
   useEffect(() => {
-    // Default initial auto-login as 'alice' if no active session
-    if (!currentUser) {
-      loginAs('alice').catch((err) => {
-        console.warn('Initial auto-login error:', err);
+    if (!currentUser && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlUser = params.get('user')?.trim().toLowerCase();
+      const urlPeer = params.get('peer')?.trim().toLowerCase();
+      const savedUser = localStorage.getItem('whispershield_active_user')?.trim().toLowerCase();
+      const targetUser = urlUser || savedUser || (urlPeer ? 'alice' : null);
+
+      if (targetUser) {
+        loginAs(targetUser).catch((err) => {
+          console.warn('Initial auto-login error:', err);
+          setIsSwitchUserOpen(true);
+        });
+      } else {
+        // Fresh browser/Incognito: prompt persona selection without overwriting @alice keys on server
         setIsSwitchUserOpen(true);
-      });
+      }
     }
   }, [currentUser, loginAs]);
 

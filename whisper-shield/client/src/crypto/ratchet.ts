@@ -272,7 +272,7 @@ export class DoubleRatchetSession {
   /**
    * Serializes active session state for IndexedDB persistence.
    */
-  public exportState(peerId: string): StoredSession {
+  public exportState(peerId: string, peerIdentityKey?: string): StoredSession {
     const skippedObj: Record<string, string> = {};
     for (const [key, val] of this.skippedMessageKeys.entries()) {
       skippedObj[key] = uint8ArrayToBase64(val);
@@ -280,6 +280,7 @@ export class DoubleRatchetSession {
 
     return {
       peerId,
+      peerIdentityKey,
       rootKey: uint8ArrayToBase64(this.rootKey),
       dhLocalKeyPair: {
         publicKey: uint8ArrayToBase64(this.dhLocalKeyPair.publicKey),

@@ -28,15 +28,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
     <div className={`flex flex-col mb-4 ${isOutgoing ? 'items-end' : 'items-start'}`}>
       <div
         className={`max-w-[78%] rounded-2xl px-4 py-3 border transition-all ${
-          isOutgoing
+          message.status === 'failed'
+            ? 'bg-rose-50 text-rose-800 border-rose-300 shadow-sm dark:bg-rose-950/30 dark:border-rose-500/40 dark:text-rose-200'
+            : isOutgoing
             ? 'bg-[#285C70] text-white border-[#285C70] shadow-sm dark:bg-[#16303D] dark:border-[#285C70]/40 dark:text-[#FFFAF8]'
             : 'bg-white text-[#16303D] border-[#E2DDDA] shadow-sm dark:bg-[#111111] dark:border-white/[0.08] dark:text-[#F2EDEA]'
         }`}
       >
         {/* Encrypted Attachment Display (Image / Document) */}
-        {message.attachment && (
+        {message.attachment && message.attachment.dataUrl?.startsWith('data:') && (
           <div className="mb-2">
-            {message.attachment.type === 'image' ? (
+            {message.attachment.type === 'image' &&
+            message.attachment.dataUrl.startsWith('data:image/') &&
+            !message.attachment.dataUrl.startsWith('data:image/svg+xml') ? (
               <div className="relative group rounded-xl overflow-hidden border border-black/10 dark:border-white/10 max-w-sm bg-black/20">
                 <img
                   src={message.attachment.dataUrl}
@@ -46,6 +50,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                 <a
                   href={message.attachment.dataUrl}
                   download={message.attachment.name}
+                  rel="noopener noreferrer"
                   className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-white backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] font-mono shadow-sm"
                   title="Download Decrypted Image"
                 >
@@ -75,6 +80,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                 <a
                   href={message.attachment.dataUrl}
                   download={message.attachment.name}
+                  rel="noopener noreferrer"
                   className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors shrink-0 text-current"
                   title="Download File"
                 >
@@ -133,8 +139,17 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
                 <ShieldCheck className="w-3 h-3" />
                 <span>AEAD</span>
               </span>
+            ) : message.status === 'sent' ? (
+              <span
+                className={`flex items-center gap-1 font-mono text-[10px] ${
+                  isOutgoing ? 'text-white/80 dark:text-amber-300' : 'text-amber-600 dark:text-amber-400'
+                }`}
+              >
+                <ShieldCheck className="w-3 h-3" />
+                <span>Queued</span>
+              </span>
             ) : message.status === 'failed' ? (
-              <span className="flex items-center gap-1 text-rose-300 dark:text-rose-400 font-mono text-[10px]">
+              <span className="flex items-center gap-1 text-rose-600 dark:text-rose-400 font-mono text-[10px] font-bold">
                 <ShieldAlert className="w-3 h-3" />
                 <span>FAILED</span>
               </span>

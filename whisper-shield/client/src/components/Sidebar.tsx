@@ -19,6 +19,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSwitchUser }) => {
     currentUser,
     activePeerId,
     allPeers,
+    unreadCounts,
     selectPeer,
     opkRemainingCount,
     refillOPKs
@@ -135,22 +136,29 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSwitchUser }) => {
             </button>
           </div>
 
-          <div className="flex items-center gap-1.5 px-0.5">
+          <div className="flex items-center gap-1.5 px-0.5 flex-wrap">
             <span className="text-[10px] font-mono text-slate-400 dark:text-neutral-500">Quick:</span>
-            <button
-              type="button"
-              onClick={() => selectPeer('bob')}
-              className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#285C70]/10 text-[#285C70] border border-[#285C70]/20 hover:bg-[#285C70]/25 transition-colors cursor-pointer"
-            >
-              @bob (Online)
-            </button>
-            <button
-              type="button"
-              onClick={() => selectPeer('charlie')}
-              className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-neutral-300 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200 transition-colors cursor-pointer"
-            >
-              @charlie (Offline)
-            </button>
+            {['alice', 'bob', 'charlie']
+              .filter((id) => id !== currentUser?.userId)
+              .slice(0, 2)
+              .map((quickId) => {
+                const peer = allPeers.find((p) => p.userId === quickId);
+                const online = Boolean(peer?.isOnline);
+                return (
+                  <button
+                    key={quickId}
+                    type="button"
+                    onClick={() => selectPeer(quickId)}
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                      online
+                        ? 'bg-[#285C70]/10 text-[#285C70] border-[#285C70]/20 hover:bg-[#285C70]/25'
+                        : 'bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-neutral-300 border-slate-200 dark:border-white/[0.08] hover:bg-slate-200'
+                    }`}
+                  >
+                    @{quickId} ({online ? 'Online' : peer ? 'Offline' : 'Unregistered'})
+                  </button>
+                );
+              })}
           </div>
         </form>
 
@@ -175,6 +183,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSwitchUser }) => {
             ) : (
               allPeers.map((peer) => {
                 const isSelected = activePeerId === peer.userId;
+                const unread = unreadCounts[peer.userId] || 0;
                 return (
                   <button
                     key={peer.userId}
@@ -202,16 +211,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenSwitchUser }) => {
                           @{peer.userId}
                         </span>
                         <span className="block text-[10px] text-slate-500 dark:text-neutral-500 font-mono truncate">
-                          OPKs: {peer.remainingOPKs} left
+                          {peer.isOnline ? 'Live Socket' : 'Offline'} • {peer.remainingOPKs} OPKs
                         </span>
                       </div>
                     </div>
 
-                    {isSelected && (
-                      <span className="text-[10px] font-mono text-[#285C70] flex items-center gap-1">
-                        <UserCheck className="w-3 h-3" />
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {unread > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-[#285C70] text-white text-[10px] font-mono font-bold">
+                          {unread}
+                        </span>
+                      )}
+                      {isSelected && (
+                        <span className="text-[10px] font-mono text-[#285C70] flex items-center gap-1">
+                          <UserCheck className="w-3 h-3" />
+                        </span>
+                      )}
+                    </div>
                   </button>
                 );
               })

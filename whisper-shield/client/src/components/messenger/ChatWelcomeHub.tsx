@@ -25,14 +25,18 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
   onOpenRelay = () => {},
   onOpenSwitchUser = () => {}
 }) => {
-  const { currentUser, selectPeer } = useChat();
+  const { currentUser, selectPeer, allPeers, isConnected } = useChat();
   const [filterCategory, setFilterCategory] = useState<string>('all');
 
   const handleSelectPeer = async (peerId: string) => {
     await selectPeer(peerId);
   };
 
-  const username = currentUser?.userId || 'alice';
+  const username = currentUser?.userId || 'guest';
+  const primaryPeerId = username === 'bob' ? 'alice' : 'bob';
+  const secondaryPeerId = username === 'charlie' ? 'bob' : 'charlie';
+  const primaryPeer = allPeers.find((p) => p.userId === primaryPeerId);
+  const secondaryPeer = allPeers.find((p) => p.userId === secondaryPeerId);
 
   // Dynamic real-time greeting based on local clock
   const getGreeting = () => {
@@ -74,7 +78,7 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
             </button>
 
             <div className="hidden sm:block text-[11px] font-mono text-[#517380] dark:text-[#989898]">
-              Curve25519 Identity Key Verified
+              {currentUser ? 'Curve25519 Identity Key Active' : 'Select Persona to Connect'}
             </div>
           </div>
 
@@ -125,10 +129,10 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
             
-            {/* Card 1: Bob's Real Identity Card (Initial Key Agreement) */}
+            {/* Card 1: Primary Peer Identity Card (Initial Key Agreement) */}
             {(filterCategory === 'all' || filterCategory === 'handshake') && (
               <TiltCard
-                onClick={() => handleSelectPeer('bob')}
+                onClick={() => handleSelectPeer(primaryPeerId)}
                 maxTilt={12}
                 scale={1.03}
                 className="p-6 sm:p-7 rounded-3xl bg-white/95 dark:bg-[#0f1117]/90 backdrop-blur-xl border border-slate-200/90 dark:border-white/[0.08] shadow-card-studio hover:shadow-card-hover cursor-pointer group flex flex-col justify-between min-h-[420px] overflow-hidden"
@@ -138,7 +142,7 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                   <div className="relative w-full h-44 rounded-2xl overflow-hidden border border-slate-200/60 dark:border-white/[0.08] shadow-inner bg-slate-900">
                     <img
                       src="/images/bob_identity_card.jpg"
-                      alt="Bob Cryptographic Identity Card"
+                      alt="Peer Cryptographic Identity Card"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out"
                       loading="lazy"
                     />
@@ -154,15 +158,19 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                   <div className="space-y-1.5 pt-1">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xl font-extrabold text-slate-900 dark:text-neutral-100 tracking-tight group-hover:text-[#285C70] transition-colors font-sans">
-                        @bob · Identity Card
+                        @{primaryPeerId} · Identity Card
                       </h3>
-                      <span className="text-[11px] font-mono text-[#285C70] font-semibold flex items-center gap-1">
+                      <span
+                        className={`text-[11px] font-mono font-semibold flex items-center gap-1 ${
+                          primaryPeer?.isOnline ? 'text-[#285C70]' : 'text-slate-400 dark:text-neutral-500'
+                        }`}
+                      >
                         <Circle className="w-2 h-2 fill-current" />
-                        Online
+                        {primaryPeer?.isOnline ? 'Online' : primaryPeer ? 'Offline' : 'Not Joined'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed font-normal">
-                      Establish an asynchronous channel via 4-part Diffie-Hellman by consuming Bob&apos;s published One-Time PreKeys.
+                      Establish an asynchronous channel via 4-part Diffie-Hellman by consuming @{primaryPeerId}&apos;s published One-Time PreKeys.
                     </p>
                   </div>
                 </div>
@@ -177,7 +185,7 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                     className="w-full justify-between"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSelectPeer('bob');
+                      handleSelectPeer(primaryPeerId);
                     }}
                   >
                     <span>Start Handshake Session</span>
@@ -186,10 +194,10 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
               </TiltCard>
             )}
 
-            {/* Card 2: Charlie's Real Sealed Envelope (Offline Queue) */}
+            {/* Card 2: Secondary Peer / Sealed Envelope (Offline Queue) */}
             {(filterCategory === 'all' || filterCategory === 'offline') && (
               <TiltCard
-                onClick={() => handleSelectPeer('charlie')}
+                onClick={() => handleSelectPeer(secondaryPeerId)}
                 maxTilt={12}
                 scale={1.03}
                 className="p-6 sm:p-7 rounded-3xl bg-white/95 dark:bg-[#0f1117]/90 backdrop-blur-xl border border-slate-200/90 dark:border-white/[0.08] shadow-card-studio hover:shadow-card-hover cursor-pointer group flex flex-col justify-between min-h-[420px] overflow-hidden"
@@ -199,7 +207,7 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                   <div className="relative w-full h-44 rounded-2xl overflow-hidden border border-slate-200/60 dark:border-white/[0.08] shadow-inner bg-slate-900">
                     <img
                       src="/images/charlie_sealed_envelope.jpg"
-                      alt="Charlie Sealed Envelope"
+                      alt="Sealed Envelope"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out"
                       loading="lazy"
                     />
@@ -208,17 +216,21 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                       <span>Double Ratchet Vault</span>
                     </div>
                     <div className="absolute bottom-2.5 right-3 text-[10px] font-mono text-white/80 bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm">
-                      Offline Queue
+                      {secondaryPeer?.isOnline ? 'Live Socket' : 'Offline Queue'}
                     </div>
                   </div>
 
                   <div className="space-y-1.5 pt-1">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xl font-extrabold text-slate-900 dark:text-neutral-100 tracking-tight group-hover:text-[#285C70] transition-colors font-sans">
-                        @charlie · Sealed Parcel
+                        @{secondaryPeerId} · Sealed Parcel
                       </h3>
-                      <span className="text-[11px] font-mono text-slate-400 dark:text-neutral-500 font-semibold">
-                        SQLite Stored
+                      <span
+                        className={`text-[11px] font-mono font-semibold ${
+                          secondaryPeer?.isOnline ? 'text-[#285C70]' : 'text-slate-400 dark:text-neutral-500'
+                        }`}
+                      >
+                        {secondaryPeer?.isOnline ? 'Online' : secondaryPeer ? 'SQLite Stored' : 'Not Joined'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed font-normal">
@@ -237,7 +249,7 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                     className="w-full justify-between"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSelectPeer('charlie');
+                      handleSelectPeer(secondaryPeerId);
                     }}
                   >
                     <span>Queue Sealed Message</span>
@@ -337,8 +349,8 @@ export const ChatWelcomeHub: React.FC<ChatWelcomeHubProps> = ({
                       <h3 className="text-xl font-extrabold text-slate-900 dark:text-neutral-100 tracking-tight group-hover:text-[#285C70] transition-colors font-sans">
                         Zero-Knowledge Relay
                       </h3>
-                      <span className="text-[11px] font-mono text-[#285C70] font-semibold">
-                        200 OK
+                      <span className={`text-[11px] font-mono font-semibold ${isConnected ? 'text-[#285C70]' : 'text-rose-500'}`}>
+                        {isConnected ? 'Relay Live' : 'Disconnected'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 dark:text-neutral-400 leading-relaxed font-normal">

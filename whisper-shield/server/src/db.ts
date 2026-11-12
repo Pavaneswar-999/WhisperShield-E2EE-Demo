@@ -54,10 +54,16 @@ export class RelayDatabase {
   }
 
   /**
-   * Registers or updates a user identity and their initial pool of One-Time PreKeys.
+   * Registers or updates a user identity and syncs their unconsumed One-Time PreKeys.
    */
   public registerUser(bundle: PreKeyBundle): void {
     const now = Date.now();
+    const userId = bundle.userId.trim().toLowerCase();
+
+    const getExistingUser = this.db.prepare(`
+      SELECT identity_key FROM users WHERE user_id = ?
+    `);
+
     const insertUser = this.db.prepare(`
       INSERT INTO users (user_id, identity_key, identity_signing_key, signed_pre_key, signed_pre_key_sig, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -69,14 +75,29 @@ export class RelayDatabase {
         created_at = excluded.created_at
     `);
 
+    const deleteAllUserOPKs = this.db.prepare(`
+      DELETE FROM one_time_prekeys WHERE user_id = ?
+    `);
+
+    const deleteUnconsumedOPKs = this.db.prepare(`
+      DELETE FROM one_time_prekeys WHERE user_id = ? AND consumed = 0
+    `);
+
+    const deleteOfflineMsgs = this.db.prepare(`
+      DELETE FROM offline_messages WHERE recipient_id = ?
+    `);
+
     const insertOPK = this.db.prepare(`
       INSERT INTO one_time_prekeys (user_id, key_data, consumed, created_at)
       VALUES (?, ?, 0, ?)
     `);
 
     const transaction = this.db.transaction(() => {
+      const existing = getExistingUser.get(userId) as { identity_key: string } | undefined;
+      const identityChanged = Boolean(existing && existing.identity_key !== bundle.identityKey);
+
       insertUser.run(
-        bundle.userId,
+        userId,
         bundle.identityKey,
         bundle.identitySigningKey,
         bundle.signedPreKey,
@@ -84,9 +105,18 @@ export class RelayDatabase {
         now
       );
 
+      if (identityChanged) {
+        // New device/browser replaced keys: discard stale OPKs and undecryptable offline messages
+        deleteAllUserOPKs.run(userId);
+        deleteOfflineMsgs.run(userId);
+      } else if (bundle.oneTimePreKeys) {
+        // Syncing active device bundle: replace unconsumed OPKs to avoid duplicates
+        deleteUnconsumedOPKs.run(userId);
+      }
+
       if (bundle.oneTimePreKeys && bundle.oneTimePreKeys.length > 0) {
         for (const opk of bundle.oneTimePreKeys) {
-          insertOPK.run(bundle.userId, opk, now);
+          insertOPK.run(userId, opk, now);
         }
       }
     });

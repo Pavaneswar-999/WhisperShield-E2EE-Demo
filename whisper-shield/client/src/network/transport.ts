@@ -26,6 +26,8 @@ export type PresenceUpdateHandler = (data: {
   isOnline: boolean;
 }) => void;
 
+export type StatusChangeHandler = (isConnected: boolean) => void;
+
 export class TransportEngine {
   private static get apiUrl(): string {
     if (typeof window !== 'undefined') {
@@ -48,12 +50,32 @@ export class TransportEngine {
     return 'ws://localhost:8080';
   }
 
+  public static getApiUrl(): string {
+    return this.apiUrl;
+  }
+
+  public static getWsUrl(): string {
+    return this.wsUrl;
+  }
+
+  public static async fetchHealth(): Promise<{ status: string; uptime: number } | null> {
+    try {
+      const res = await fetch(`${this.apiUrl}/health`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
   private ws: WebSocket | null = null;
   private currentUserId: string | null = null;
   private messageHandlers: Set<InboundMessageHandler> = new Set();
   private receiptHandlers: Set<DeliveryReceiptHandler> = new Set();
   private presenceHandlers: Set<PresenceUpdateHandler> = new Set();
+  private statusHandlers: Set<StatusChangeHandler> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private isExplicitlyClosed: boolean = false;
 
   // --- REST Key Directory APIs ---
@@ -101,28 +123,79 @@ export class TransportEngine {
     return res.json();
   }
 
+  public static async sendMessageHttp(
+    senderId: string,
+    recipientId: string,
+    encryptedEnvelope: EncryptedMessageEnvelope
+  ): Promise<{ status: 'delivered' | 'queued_offline'; timestamp: number }> {
+    const res = await fetch(`${this.apiUrl}/messages/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        senderId: senderId.trim().toLowerCase(),
+        recipientId: recipientId.trim().toLowerCase(),
+        encryptedEnvelope,
+        timestamp: Date.now()
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'HTTP relay delivery failed' }));
+      throw new Error(err.error || `HTTP relay delivery failed with status ${res.status}`);
+    }
+    return res.json();
+  }
+
   // --- WebSocket Real-Time Blind Routing ---
 
+  private clearTimers(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private notifyStatus(connected: boolean): void {
+    for (const handler of this.statusHandlers) {
+      handler(connected);
+    }
+  }
+
   public connect(userId: string): void {
-    this.currentUserId = userId;
+    const normalizedId = userId.trim().toLowerCase();
+    this.currentUserId = normalizedId;
     this.isExplicitlyClosed = false;
+    this.clearTimers();
 
     if (this.ws) {
-      this.ws.close();
+      const stale = this.ws;
       this.ws = null;
+      stale.close();
     }
 
-    const wsEndpoint = `${TransportEngine.wsUrl}?userId=${encodeURIComponent(userId)}`;
-    this.ws = new WebSocket(wsEndpoint);
+    const wsEndpoint = `${TransportEngine.wsUrl}?userId=${encodeURIComponent(normalizedId)}`;
+    const socket = new WebSocket(wsEndpoint);
+    this.ws = socket;
 
-    this.ws.onopen = () => {
-      // Send ping to keep connection warm
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
+      this.notifyStatus(true);
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'ping' }));
       }
+      if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = setInterval(() => {
+        if (this.ws === socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 20000);
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return;
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'message' && data.encryptedEnvelope) {
@@ -156,33 +229,34 @@ export class TransportEngine {
       }
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
+      this.clearTimers();
+      this.notifyStatus(false);
       if (!this.isExplicitlyClosed) {
-        // Attempt automatic reconnection every 2.5 seconds
-        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = setTimeout(() => {
           if (this.currentUserId && !this.isExplicitlyClosed) {
             this.connect(this.currentUserId);
           }
-        }, 2500);
+        }, 1500);
       }
     };
 
-    this.ws.onerror = (err) => {
+    socket.onerror = (err) => {
+      if (this.ws !== socket) return;
       console.warn('Transport WebSocket error:', err);
     };
   }
 
   public disconnect(): void {
     this.isExplicitlyClosed = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.clearTimers();
     if (this.ws) {
-      this.ws.close();
+      const active = this.ws;
       this.ws = null;
+      active.close();
     }
+    this.notifyStatus(false);
   }
 
   public sendEnvelope(recipientId: string, envelope: EncryptedMessageEnvelope): boolean {
@@ -194,7 +268,7 @@ export class TransportEngine {
       JSON.stringify({
         type: 'message',
         senderId: this.currentUserId,
-        recipientId,
+        recipientId: recipientId.trim().toLowerCase(),
         encryptedEnvelope: envelope,
         timestamp: Date.now()
       })
@@ -215,6 +289,11 @@ export class TransportEngine {
   public onPresence(handler: PresenceUpdateHandler): () => void {
     this.presenceHandlers.add(handler);
     return () => this.presenceHandlers.delete(handler);
+  }
+
+  public onStatusChange(handler: StatusChangeHandler): () => void {
+    this.statusHandlers.add(handler);
+    return () => this.statusHandlers.delete(handler);
   }
 
   public isConnected(): boolean {

@@ -56,7 +56,7 @@ export const LiquidButton: React.FC<LiquidButtonProps> = ({
     <button
       {...props}
       disabled={disabled}
-      className={`group relative inline-flex items-center justify-center font-sans tracking-tight transition-all duration-300 ease-out active:scale-[0.96] overflow-hidden select-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 ${sizeClasses} ${variantClasses} ${className}`}
+      className={`group relative inline-flex items-center justify-center font-sans tracking-tight transition-all duration-150 ease-out active:scale-[0.96] overflow-hidden select-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 ${sizeClasses} ${variantClasses} ${className}`}
     >
       {/* Specular Liquid Light Reflection (Sweeping shimmer) */}
       {liquidWave && !disabled && (

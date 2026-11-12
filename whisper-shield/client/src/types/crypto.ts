@@ -43,6 +43,7 @@ export interface KeyPairBase64 {
 
 export interface StoredSession {
   peerId: string;
+  peerIdentityKey?: string; // Remote Curve25519 identity key bound to this session
   rootKey: string; // Base64
   dhLocalKeyPair: KeyPairBase64;
   dhRemotePublicKey: string; // Base64

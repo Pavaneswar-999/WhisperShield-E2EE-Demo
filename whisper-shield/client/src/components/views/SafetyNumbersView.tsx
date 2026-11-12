@@ -20,13 +20,19 @@ import {
 export const SafetyNumbersView: React.FC = () => {
   const {
     currentUser,
+    activePeerId,
     allPeers,
-    isSafetyNumberVerified,
-    verifySafetyNumber
+    verifySafetyNumber,
+    getPeerVerificationStatus
   } = useChat();
 
-  const [selectedPeerId, setSelectedPeerId] = useState<string>('bob');
+  const [selectedPeerId, setSelectedPeerId] = useState<string>(
+    () => activePeerId || (currentUser?.userId === 'bob' ? 'alice' : 'bob')
+  );
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
+  const [localVerified, setLocalVerified] = useState<boolean>(false);
+  const [isTogglingVerify, setIsTogglingVerify] = useState<boolean>(false);
+  const selectedPeerIK = allPeers.find((p) => p.userId === selectedPeerId)?.identityKey ?? null;
   const [isSimulatingAttack, setIsSimulatingAttack] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       return new URLSearchParams(window.location.search).get('mitm') === 'true';
@@ -39,6 +45,7 @@ export const SafetyNumbersView: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const calculate = async () => {
       if (!currentUser) return;
       try {
@@ -49,13 +56,34 @@ export const SafetyNumbersView: React.FC = () => {
           // Attacker substituted peer's key with adversarial entropy
           peerIK = new Uint8Array(32);
           peerIK.fill(0xee);
+        } else if (selectedPeerIK) {
+          peerIK = base64ToUint8Array(selectedPeerIK);
         } else {
-          const peerBundle = await TransportEngine.fetchPreKeyBundle(selectedPeerId);
-          peerIK = base64ToUint8Array(peerBundle.identityKey);
+          // Read-only lookup without consuming an OPK
+          const registeredUsers = await TransportEngine.fetchRegisteredUsers();
+          const found = registeredUsers.find((u) => u.userId === selectedPeerId);
+          if (!found) {
+            if (!cancelled) {
+              setSafetyNumber(null);
+              setLocalVerified(false);
+            }
+            return;
+          }
+          peerIK = base64ToUint8Array(found.identityKey);
         }
 
         const sn = await SafetyNumber.generate(myIK, peerIK);
+        if (cancelled) return;
         setSafetyNumber(sn);
+
+        if (isSimulatingAttack) {
+          setLocalVerified(false);
+        } else {
+          const verified = await getPeerVerificationStatus(selectedPeerId, sn);
+          if (!cancelled) {
+            setLocalVerified(verified);
+          }
+        }
 
         if (canvasRef.current) {
           await QRCode.toCanvas(canvasRef.current, sn, {
@@ -74,11 +102,27 @@ export const SafetyNumbersView: React.FC = () => {
     };
 
     calculate();
-  }, [currentUser, selectedPeerId, isSimulatingAttack]);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, selectedPeerId, selectedPeerIK, isSimulatingAttack, getPeerVerificationStatus]);
+
+  const handleToggleVerified = async () => {
+    if (!safetyNumber || isSimulatingAttack || isTogglingVerify) return;
+    setIsTogglingVerify(true);
+    try {
+      const nextVerified = !localVerified;
+      await verifySafetyNumber(nextVerified, selectedPeerId, safetyNumber);
+      setLocalVerified(nextVerified);
+    } finally {
+      setIsTogglingVerify(false);
+    }
+  };
 
   const runBenchmark = async () => {
     if (!currentUser) return;
     setIsBenchmarking(true);
+    await new Promise((resolve) => setTimeout(resolve, 16));
     const start = performance.now();
     try {
       const myIK = base64ToUint8Array(currentUser.identityDHKeyPair.publicKey);
@@ -125,8 +169,11 @@ export const SafetyNumbersView: React.FC = () => {
             <span className="text-xs font-mono font-semibold text-slate-700 dark:text-neutral-300">
               Select Peer to Verify:
             </span>
-            <div className="flex items-center gap-1.5">
-              {['bob', 'charlie', ...allPeers.map((p) => p.userId).filter((id) => id !== 'bob' && id !== 'charlie')].slice(0, 4).map((id) => (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {Array.from(new Set([...allPeers.map((p) => p.userId), 'alice', 'bob', 'charlie']))
+                .filter((id) => id !== currentUser?.userId)
+                .slice(0, 4)
+                .map((id) => (
                 <button
                   key={id}
                   type="button"
@@ -145,8 +192,8 @@ export const SafetyNumbersView: React.FC = () => {
 
           <div className="flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-neutral-400">
             <span>Status:</span>
-            <span className={`font-semibold ${isSimulatingAttack ? 'text-rose-600 dark:text-rose-400 font-black' : isSafetyNumberVerified ? 'text-[#285C70]' : 'text-amber-600 dark:text-amber-400'}`}>
-              {isSimulatingAttack ? '🚨 MITM MISMATCH DETECTED' : isSafetyNumberVerified ? '✓ Identity Confirmed' : '! Pending Verification'}
+            <span className={`font-semibold ${isSimulatingAttack ? 'text-rose-600 dark:text-rose-400 font-black' : localVerified ? 'text-[#285C70]' : 'text-amber-600 dark:text-amber-400'}`}>
+              {isSimulatingAttack ? '🚨 MITM MISMATCH DETECTED' : localVerified ? '✓ Identity Confirmed' : '! Pending Verification'}
             </span>
           </div>
         </div>
@@ -252,14 +299,14 @@ export const SafetyNumbersView: React.FC = () => {
             {/* Verification Toggle */}
             <div className="pt-4 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {isSafetyNumberVerified ? (
+                {localVerified ? (
                   <ShieldCheck className="w-5 h-5 text-[#285C70]" />
                 ) : (
                   <ShieldAlert className="w-5 h-5 text-amber-500" />
                 )}
                 <div>
                   <span className="text-xs font-bold font-sans text-slate-900 dark:text-neutral-100 block">
-                    {isSafetyNumberVerified ? 'Marked as Verified' : 'Unverified Status'}
+                    {localVerified ? 'Marked as Verified' : 'Unverified Status'}
                   </span>
                   <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-sans">
                     Persisted in IndexedDB. Alerts trigger if peer replaces keys.
@@ -268,12 +315,17 @@ export const SafetyNumbersView: React.FC = () => {
               </div>
 
               <LiquidButton
-                variant={isSafetyNumberVerified ? 'secondary' : 'brand'}
+                variant={localVerified ? 'secondary' : 'brand'}
                 size="md"
-                onClick={() => verifySafetyNumber(!isSafetyNumberVerified)}
-                icon={isSafetyNumberVerified ? ShieldAlert : ShieldCheck}
+                onClick={handleToggleVerified}
+                disabled={!safetyNumber || isSimulatingAttack || isTogglingVerify}
+                icon={localVerified ? ShieldAlert : ShieldCheck}
               >
-                {isSafetyNumberVerified ? 'Mark as Unverified' : 'Confirm & Mark Verified'}
+                {isTogglingVerify
+                  ? 'Saving...'
+                  : localVerified
+                  ? 'Mark as Unverified'
+                  : 'Confirm & Mark Verified'}
               </LiquidButton>
             </div>
           </div>

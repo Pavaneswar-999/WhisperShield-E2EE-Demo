@@ -18,6 +18,7 @@ interface ChatContextType {
   activePeerInfo: PeerUserInfo | null;
   allPeers: PeerUserInfo[];
   messages: ChatMessage[];
+  unreadCounts: Record<string, number>;
   activeSession: DoubleRatchetSession | null;
   safetyNumber: string | null;
   isSafetyNumberVerified: boolean;
@@ -30,7 +31,9 @@ interface ChatContextType {
   loginAs: (userId: string) => Promise<void>;
   selectPeer: (peerId: string) => Promise<void>;
   sendMessage: (content: string, simulateTamper?: boolean, attachment?: MessageAttachment) => Promise<void>;
-  verifySafetyNumber: (verified: boolean) => Promise<void>;
+  resetPeerSession: (peerId?: string) => Promise<void>;
+  verifySafetyNumber: (verified: boolean, targetPeerId?: string, overrideSafetyNumber?: string) => Promise<void>;
+  getPeerVerificationStatus: (peerId: string, expectedSafetyNumber?: string) => Promise<boolean>;
   refillOPKs: (count?: number) => Promise<void>;
   simulateStateCompromise: () => { compromisedKeyHex: string; turnCount: number };
 }
@@ -42,6 +45,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activePeerId, setActivePeerId] = useState<string | null>(null);
   const [allPeers, setAllPeers] = useState<PeerUserInfo[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [activeSession, setActiveSession] = useState<DoubleRatchetSession | null>(null);
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
   const [isSafetyNumberVerified, setIsSafetyNumberVerified] = useState<boolean>(false);
@@ -64,6 +68,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const activeSessionRef = useRef<DoubleRatchetSession | null>(null);
   const currentUserRef = useRef<UserIdentity | null>(null);
   const activePeerIdRef = useRef<string | null>(null);
+  const allPeersRef = useRef<PeerUserInfo[]>([]);
 
   // Keep refs synchronized
   useEffect(() => {
@@ -78,32 +83,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     activePeerIdRef.current = activePeerId;
   }, [activePeerId]);
 
-  // Load available peers from relay and ensure demo peers are registered
+  useEffect(() => {
+    allPeersRef.current = allPeers;
+  }, [allPeers]);
+
+  // Load real registered peers from the relay directory
   const refreshPeers = useCallback(async () => {
     try {
-      let users = await TransportEngine.fetchRegisteredUsers();
-      
-      // Auto-seed Bob and Charlie if not registered yet
-      const existingUserIds = new Set(users.map((u) => u.userId));
-      const demoUsers = ['bob', 'charlie'];
-      let seeded = false;
-      
-      for (const demoId of demoUsers) {
-        if (!existingUserIds.has(demoId) && demoId !== currentUserRef.current?.userId) {
-          try {
-            const keys = X3DHEngine.generatePreKeyBundle(demoId, 40);
-            await TransportEngine.registerPreKeyBundle(keys.bundle);
-            seeded = true;
-          } catch (seedErr) {
-            console.warn(`Could not seed demo peer ${demoId}:`, seedErr);
-          }
-        }
-      }
-
-      if (seeded) {
-        users = await TransportEngine.fetchRegisteredUsers();
-      }
-
+      const users = await TransportEngine.fetchRegisteredUsers();
       if (currentUserRef.current) {
         setAllPeers(users.filter((u) => u.userId !== currentUserRef.current?.userId));
       } else {
@@ -120,11 +107,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setOpkRemainingCount(count);
   }, []);
 
-  // Load or create user identity
+  // Load or create user identity and always sync real public keys to the relay
   const loginAs = useCallback(
-    async (userId: string) => {
+    async (rawUserId: string) => {
+      const userId = rawUserId.trim().toLowerCase();
+      if (!userId) return;
+
       StorageEngine.setScope(userId);
       let identity = await StorageEngine.getIdentity(userId);
+      let opkPublicKeys: string[] = [];
 
       if (!identity) {
         // Generate complete prekey bundle
@@ -151,13 +142,33 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Persist identity and OPKs to IndexedDB
         await StorageEngine.saveIdentity(identity);
         await StorageEngine.savePreKeys(keys.oneTimePreKeys);
-
-        // Register public bundle on zero-knowledge relay server
-        try {
-          await TransportEngine.registerPreKeyBundle(keys.bundle);
-        } catch (err) {
-          console.error('Failed to register bundle with relay server:', err);
+        opkPublicKeys = keys.bundle.oneTimePreKeys || [];
+      } else {
+        opkPublicKeys = await StorageEngine.getUnconsumedPreKeyPublicKeys();
+        if (opkPublicKeys.length < 10) {
+          const { records, publicKeys } = X3DHEngine.generateOPKRefill(50);
+          await StorageEngine.savePreKeys(records);
+          opkPublicKeys = [...opkPublicKeys, ...publicKeys];
         }
+      }
+
+      // Always re-sync existing/new public keys with relay so restarts or sleep never leave peer lookup 404
+      try {
+        await TransportEngine.registerPreKeyBundle({
+          userId: identity.userId,
+          identityKey: identity.identityDHKeyPair.publicKey,
+          identitySigningKey: identity.identitySigningKeyPair.publicKey,
+          signedPreKey: identity.signedPreKeyPair.publicKey,
+          signedPreKeySig: identity.signedPreKeyPair.signature,
+          oneTimePreKeys: opkPublicKeys,
+          remainingOPKs: opkPublicKeys.length
+        });
+      } catch (err) {
+        console.error('Failed to register bundle with relay server:', err);
+      }
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('whispershield_active_user', userId);
       }
 
       setCurrentUser(identity);
@@ -167,12 +178,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveSession(null);
       activeSessionRef.current = null;
       setMessages([]);
+      setUnreadCounts({});
       setSafetyNumber(null);
       setIsSafetyNumberVerified(false);
 
-      // Connect WebSocket transport
+      // Connect WebSocket transport (real status arrives via onStatusChange)
       transportRef.current.connect(userId);
-      setIsConnected(true);
 
       await refreshOPKCount();
       await refreshPeers();
@@ -194,18 +205,58 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Select an active peer conversation
   const selectPeer = useCallback(
-    async (peerId: string) => {
+    async (rawPeerId: string) => {
+      const peerId = rawPeerId.trim().toLowerCase();
+      if (!peerId) {
+        setActivePeerId(null);
+        activePeerIdRef.current = null;
+        setActiveSession(null);
+        activeSessionRef.current = null;
+        setMessages([]);
+        setSafetyNumber(null);
+        setIsSafetyNumberVerified(false);
+        return;
+      }
+
       setActivePeerId(peerId);
       activePeerIdRef.current = peerId;
+      setUnreadCounts((prev) => {
+        if (!prev[peerId]) return prev;
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
 
       if (!currentUserRef.current) return;
 
-      // 1. Load active or stored session
+      // Refresh latest peer directory without consuming an OPK
+      let knownPeer = allPeersRef.current.find((p) => p.userId === peerId);
+      if (!knownPeer) {
+        try {
+          const users = await TransportEngine.fetchRegisteredUsers();
+          setAllPeers(users.filter((u) => u.userId !== currentUserRef.current?.userId));
+          knownPeer = users.find((u) => u.userId === peerId);
+        } catch {
+          // ignore
+        }
+      }
+
+      // 1. Load active or stored session (discard stale session if peer regenerated device keys)
       const storedSession = await StorageEngine.getSession(peerId);
       if (storedSession) {
-        const session = DoubleRatchetSession.importState(storedSession);
-        setActiveSession(session);
-        activeSessionRef.current = session;
+        if (
+          knownPeer?.identityKey &&
+          storedSession.peerIdentityKey &&
+          storedSession.peerIdentityKey !== knownPeer.identityKey
+        ) {
+          await StorageEngine.deleteSession(peerId);
+          setActiveSession(null);
+          activeSessionRef.current = null;
+        } else {
+          const session = DoubleRatchetSession.importState(storedSession);
+          setActiveSession(session);
+          activeSessionRef.current = session;
+        }
       } else {
         setActiveSession(null);
         activeSessionRef.current = null;
@@ -215,17 +266,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const storedMsgs = await StorageEngine.getMessagesForPeer(currentUserRef.current.userId, peerId);
       setMessages(storedMsgs);
 
-      // 3. Compute deterministic Safety Number if peer identity is known
+      // 3. Compute deterministic Safety Number using directory identityKey (zero OPK consumption)
       try {
-        const peerBundle = await TransportEngine.fetchPreKeyBundle(peerId);
+        if (!knownPeer?.identityKey) {
+          setSafetyNumber(null);
+          setIsSafetyNumberVerified(false);
+          return;
+        }
         const myIK = base64ToUint8Array(currentUserRef.current.identityDHKeyPair.publicKey);
-        const peerIK = base64ToUint8Array(peerBundle.identityKey);
+        const peerIK = base64ToUint8Array(knownPeer.identityKey);
 
         const sn = await SafetyNumber.generate(myIK, peerIK);
         setSafetyNumber(sn);
 
         const snRecord = await StorageEngine.getSafetyNumber(peerId);
-        setIsSafetyNumberVerified(Boolean(snRecord?.verified));
+        setIsSafetyNumberVerified(Boolean(snRecord?.verified && snRecord.safetyNumber === sn));
       } catch (err) {
         console.warn('Could not compute safety number yet:', err);
         setSafetyNumber(null);
@@ -251,17 +306,34 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Verify or unverify Safety Number
   const verifySafetyNumber = useCallback(
-    async (verified: boolean) => {
-      if (!activePeerId || !safetyNumber) return;
+    async (verified: boolean, targetPeerId?: string, overrideSafetyNumber?: string) => {
+      const peerId = targetPeerId || activePeerId;
+      const sn = overrideSafetyNumber || safetyNumber;
+      if (!peerId || !sn) return;
       await StorageEngine.saveSafetyNumber({
-        peerId: activePeerId,
-        safetyNumber,
+        peerId,
+        safetyNumber: sn,
         verified,
         verifiedAt: verified ? Date.now() : undefined
       });
-      setIsSafetyNumberVerified(verified);
+      if (peerId === activePeerId) {
+        setIsSafetyNumberVerified(verified);
+      }
     },
     [activePeerId, safetyNumber]
+  );
+
+  const getPeerVerificationStatus = useCallback(
+    async (peerId: string, expectedSafetyNumber?: string): Promise<boolean> => {
+      if (!peerId) return false;
+      const snRecord = await StorageEngine.getSafetyNumber(peerId);
+      if (!snRecord?.verified) return false;
+      if (expectedSafetyNumber && snRecord.safetyNumber !== expectedSafetyNumber) {
+        return false;
+      }
+      return true;
+    },
+    []
   );
 
   // Inbound Message Processor
@@ -272,18 +344,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       envelope: EncryptedMessageEnvelope;
       timestamp: number;
     }) => {
-      const { senderId, envelope, timestamp } = data;
+      const senderId = data.senderId.trim().toLowerCase();
+      const { envelope, timestamp } = data;
       const me = currentUserRef.current;
       if (!me) return;
 
       try {
-        let session = activeSessionRef.current;
-        if (!session || activePeerIdRef.current !== senderId) {
-          const stored = await StorageEngine.getSession(senderId);
-          if (stored) {
-            session = DoubleRatchetSession.importState(stored);
-          }
+        const stored = await StorageEngine.getSession(senderId);
+        let session = activePeerIdRef.current === senderId ? activeSessionRef.current : null;
+        if (!session && stored) {
+          session = DoubleRatchetSession.importState(stored);
         }
+
+        const peerKnownIK =
+          envelope.senderIdentityKey ||
+          stored?.peerIdentityKey ||
+          allPeersRef.current.find((p) => p.userId === senderId)?.identityKey;
 
         // Handle X3DH initial handshake message
         if (envelope.isInitialHandshake) {
@@ -320,7 +396,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             await refreshOPKCount();
           }
 
-          // Bob initializes session with his SPK as local key pair
+          // Responder initializes session with its SPK as local key pair
           session = new DoubleRatchetSession({
             initialSharedMasterKey: masterSecret,
             localDHKeyPair: bobSPKRaw
@@ -328,7 +404,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         if (!session) {
-          throw new Error(`No active session found to decrypt message from ${senderId}`);
+          throw new Error(
+            `No active Double Ratchet session with @${senderId}. Ask @${senderId} to reset/re-send or reset the session.`
+          );
         }
 
         // Decrypt envelope using Double Ratchet
@@ -353,10 +431,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (activePeerIdRef.current === senderId) {
           setActiveSession(session);
           activeSessionRef.current = session;
+        } else {
+          setUnreadCounts((prev) => ({ ...prev, [senderId]: (prev[senderId] || 0) + 1 }));
         }
 
-        // Save session state to IndexedDB
-        await StorageEngine.saveSession(session.exportState(senderId));
+        // Save session state to IndexedDB bound to peer's identity key
+        await StorageEngine.saveSession(session.exportState(senderId, peerKnownIK));
 
         // Create ChatMessage record
         const chatMsg: ChatMessage = {
@@ -391,22 +471,79 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch (err) {
         console.error('Failed to decrypt inbound message:', err);
+        const errText = err instanceof Error ? err.message : String(err);
+        const failedMsg: ChatMessage = {
+          id: `msg-err-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          senderId,
+          recipientId: me.userId,
+          content: `[Rejected / Decryption Failed] ${errText}`,
+          timestamp,
+          direction: 'incoming',
+          status: 'failed'
+        };
+        await StorageEngine.saveMessage(failedMsg);
+        if (activePeerIdRef.current === senderId) {
+          setMessages((prev) => [...prev, failedMsg]);
+        } else {
+          setUnreadCounts((prev) => ({ ...prev, [senderId]: (prev[senderId] || 0) + 1 }));
+        }
       }
     },
     [refillOPKs, refreshOPKCount]
   );
 
+  // Manually reset ratchet session to force a fresh X3DH handshake on next message
+  const resetPeerSession = useCallback(async (targetPeerId?: string) => {
+    const peerId = (targetPeerId || activePeerIdRef.current || '').trim().toLowerCase();
+    if (!peerId) return;
+    await StorageEngine.deleteSession(peerId);
+    if (activePeerIdRef.current === peerId) {
+      setActiveSession(null);
+      activeSessionRef.current = null;
+    }
+  }, []);
+
   // Send message to peer (supports text and/or encrypted file/image attachment)
   const sendMessage = useCallback(
     async (content: string, simulateTamper: boolean = false, attachment?: MessageAttachment) => {
       const me = currentUserRef.current;
-      const peerId = activePeerIdRef.current;
+      const peerId = activePeerIdRef.current?.trim().toLowerCase();
       if (!me || !peerId || (!content.trim() && !attachment)) return;
 
       let session = activeSessionRef.current;
+      let storedSession = await StorageEngine.getSession(peerId);
       let isInitialHandshake = false;
       let ephemeralPublicKey: string | undefined;
       let consumedOneTimePreKey: string | null = null;
+
+      // Refresh directory check so we catch newly registered peers or rotated browser keys
+      let currentPeerInfo = allPeersRef.current.find((p) => p.userId === peerId);
+      try {
+        const users = await TransportEngine.fetchRegisteredUsers();
+        setAllPeers(users.filter((u) => u.userId !== me.userId));
+        currentPeerInfo = users.find((u) => u.userId === peerId);
+      } catch {
+        // use cached allPeers if directory fetch fails momentarily
+      }
+
+      if (!currentPeerInfo) {
+        throw new Error(
+          `@${peerId} is not registered on the relay server yet. Open another browser or Incognito window and log in as @${peerId} first.`
+        );
+      }
+
+      // If peer rotated/recreated keys in another browser or Incognito, discard obsolete ratchet session
+      if (
+        session &&
+        storedSession?.peerIdentityKey &&
+        storedSession.peerIdentityKey !== currentPeerInfo.identityKey
+      ) {
+        await StorageEngine.deleteSession(peerId);
+        session = null;
+        storedSession = undefined;
+      }
+
+      const peerIdentityKey = currentPeerInfo.identityKey;
 
       // Step 1: If session doesn't exist, execute X3DH initial handshake
       if (!session) {
@@ -453,11 +590,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         envelope.payload.ciphertext = uint8ArrayToBase64(ctBytes);
       }
 
-      // Step 3: Transmit envelope over transport
-      transportRef.current.sendEnvelope(peerId, envelope);
+      // Step 3: Transmit via WebSocket, or guarantee delivery via HTTP relay fallback
+      let deliveryStatus: ChatMessage['status'] = 'delivered';
+      const sentViaWs = transportRef.current.sendEnvelope(peerId, envelope);
+      if (!sentViaWs) {
+        const httpRes = await TransportEngine.sendMessageHttp(me.userId, peerId, envelope);
+        deliveryStatus = httpRes.status === 'delivered' ? 'delivered' : 'sent';
+      } else if (!currentPeerInfo.isOnline) {
+        deliveryStatus = 'sent';
+      }
 
-      // Step 4: Persist session and message to IndexedDB
-      await StorageEngine.saveSession(session.exportState(peerId));
+      // Step 4: Persist session (bound to peerIdentityKey) and message to IndexedDB
+      await StorageEngine.saveSession(session.exportState(peerId, peerIdentityKey));
 
       const chatMsg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -467,7 +611,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         attachment,
         timestamp: Date.now(),
         direction: 'outgoing',
-        status: 'delivered',
+        status: deliveryStatus,
         telemetry: {
           n: envelope.header.n,
           pn: envelope.header.pn,
@@ -518,6 +662,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Listen to Transport events
   useEffect(() => {
     const transport = transportRef.current;
+    refreshPeers();
+
+    const unsubStatus = transport.onStatusChange((connected) => {
+      setIsConnected(connected);
+      if (connected) {
+        refreshPeers();
+      }
+    });
 
     const unsubMsg = transport.onMessage((data) => {
       handleInboundMessage(data);
@@ -535,13 +687,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Periodic sync for dynamic peer discovery
     const syncInterval = setInterval(() => {
+      refreshPeers();
       if (currentUserRef.current) {
-        refreshPeers();
         refreshOPKCount();
       }
     }, 3500);
 
     return () => {
+      unsubStatus();
       unsubMsg();
       unsubPresence();
       clearInterval(syncInterval);
@@ -559,6 +712,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activePeerInfo,
         allPeers,
         messages,
+        unreadCounts,
         activeSession,
         safetyNumber,
         isSafetyNumberVerified,
@@ -571,7 +725,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginAs,
         selectPeer,
         sendMessage,
+        resetPeerSession,
         verifySafetyNumber,
+        getPeerVerificationStatus,
         refillOPKs,
         simulateStateCompromise
       }}

@@ -41,6 +41,7 @@ export const ChatViewport: React.FC<ChatViewportProps> = ({
     setIsInspectorOpen,
     setIsSafetyModalOpen,
     sendMessage,
+    resetPeerSession,
     selectPeer
   } = useChat();
 
@@ -186,6 +187,18 @@ export const ChatViewport: React.FC<ChatViewportProps> = ({
             )}
           </button>
 
+          {/* Session Reset Button */}
+          {activeSession && (
+            <button
+              type="button"
+              onClick={() => resetPeerSession(activePeerId)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-neutral-400 text-[11px] font-mono transition-colors cursor-pointer"
+              title="Reset Double Ratchet state to force a fresh X3DH handshake"
+            >
+              <span>Re-key</span>
+            </button>
+          )}
+
           {/* Session Inspector Drawer Toggle */}
           <button
             type="button"
@@ -207,10 +220,12 @@ export const ChatViewport: React.FC<ChatViewportProps> = ({
               <ShieldCheck className="w-5 h-5 text-[#285C70]" />
             </div>
             <span className="font-semibold text-slate-700 dark:text-neutral-300">
-              Session initiated with @{activePeerId}
+              Session ready with @{activePeerId}
             </span>
-            <span className="text-[11px] text-slate-500 dark:text-neutral-500 mt-1">
-              Send your first message to complete the 4-part Diffie-Hellman handshake.
+            <span className="text-[11px] text-slate-500 dark:text-neutral-500 mt-1 max-w-md">
+              {activePeerInfo
+                ? 'Send your first message to complete the 4-part Diffie-Hellman handshake.'
+                : `@${activePeerId} is not registered on the relay yet. Open another browser or Incognito window and log in as @${activePeerId}.`}
             </span>
           </div>
         ) : (
