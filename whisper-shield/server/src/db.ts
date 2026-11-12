@@ -126,9 +126,16 @@ export class RelayDatabase {
 
   /**
    * Refills the One-Time PreKey pool for an existing registered identity.
+   * Returns null if the user does not exist.
    */
-  public refillOPKs(userId: string, opks: string[]): number {
+  public refillOPKs(userId: string, opks: string[]): number | null {
+    const normalizedUserId = userId.trim().toLowerCase();
     const now = Date.now();
+
+    const userExistsStmt = this.db.prepare(`
+      SELECT 1 FROM users WHERE user_id = ?
+    `);
+
     const insertOPK = this.db.prepare(`
       INSERT INTO one_time_prekeys (user_id, key_data, consumed, created_at)
       VALUES (?, ?, 0, ?)
@@ -139,10 +146,13 @@ export class RelayDatabase {
     `);
 
     const transaction = this.db.transaction(() => {
-      for (const opk of opks) {
-        insertOPK.run(userId, opk, now);
+      if (!userExistsStmt.get(normalizedUserId)) {
+        return null;
       }
-      const result = countRemainingStmt.get(userId) as { count: number };
+      for (const opk of opks) {
+        insertOPK.run(normalizedUserId, opk, now);
+      }
+      const result = countRemainingStmt.get(normalizedUserId) as { count: number };
       return result.count;
     });
 

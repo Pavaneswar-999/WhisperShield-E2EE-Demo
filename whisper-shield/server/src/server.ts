@@ -26,8 +26,20 @@ function normalizeValidUserId(raw: unknown): string | null {
   return USER_ID_PATTERN.test(normalized) ? normalized : null;
 }
 
+function isValidPreKeyList(keys: unknown): keys is string[] {
+  return (
+    Array.isArray(keys) &&
+    keys.length <= 200 &&
+    keys.every((k) => typeof k === 'string' && k.length > 0 && k.length <= 256)
+  );
+}
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return typeof val === 'object' && val !== null && !Array.isArray(val);
+}
+
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 10 * 1024 * 1024 });
 
 const db = new RelayDatabase();
 
@@ -43,10 +55,21 @@ app.get('/api/health', (_req: Request, res: Response): void => {
 app.post('/api/keys/register', (req: Request, res: Response): void => {
   const bundle: PreKeyBundle = req.body;
   const validUserId = normalizeValidUserId(bundle?.userId);
-  if (!validUserId || !bundle?.identityKey || !bundle?.signedPreKey || !bundle?.signedPreKeySig) {
+  if (
+    !validUserId ||
+    typeof bundle?.identityKey !== 'string' ||
+    !bundle.identityKey ||
+    typeof bundle?.identitySigningKey !== 'string' ||
+    !bundle.identitySigningKey ||
+    typeof bundle?.signedPreKey !== 'string' ||
+    !bundle.signedPreKey ||
+    typeof bundle?.signedPreKeySig !== 'string' ||
+    !bundle.signedPreKeySig ||
+    (bundle.oneTimePreKeys !== undefined && !isValidPreKeyList(bundle.oneTimePreKeys))
+  ) {
     res.status(400).json({
       error:
-        'Incomplete or invalid cryptographic bundle. Valid userId (1-32 alphanumeric/_/-), identityKey, signedPreKey, and signedPreKeySig are required.'
+        'Incomplete or invalid cryptographic bundle. Valid userId (1-32 alphanumeric/_/-), identityKey, identitySigningKey, signedPreKey, and signedPreKeySig are required.'
     });
     return;
   }
@@ -58,8 +81,8 @@ app.post('/api/keys/register', (req: Request, res: Response): void => {
       message: 'Cryptographic prekey bundle registered successfully.'
     });
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Failed to register prekey bundle: ${errorMsg}` });
+    console.error('Failed to register prekey bundle:', err);
+    res.status(500).json({ error: 'Internal server error while registering prekey bundle.' });
   }
 });
 
@@ -77,29 +100,33 @@ app.get('/api/keys/:userId', (req: Request, res: Response): void => {
     }
     res.status(200).json(bundle);
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Database error retrieving bundle: ${errorMsg}` });
+    console.error('Database error retrieving bundle:', err);
+    res.status(500).json({ error: 'Internal server error while retrieving prekey bundle.' });
   }
 });
 
 app.post('/api/keys/refill', (req: Request, res: Response): void => {
   const userId = normalizeValidUserId(req.body?.userId);
   const oneTimePreKeys = req.body?.oneTimePreKeys;
-  if (!userId || !Array.isArray(oneTimePreKeys) || oneTimePreKeys.length === 0) {
-    res.status(400).json({ error: 'Valid userId and non-empty oneTimePreKeys array are required.' });
+  if (!userId || !isValidPreKeyList(oneTimePreKeys) || oneTimePreKeys.length === 0) {
+    res.status(400).json({ error: 'Valid userId and non-empty oneTimePreKeys array (max 200) are required.' });
     return;
   }
 
   try {
     const remainingCount = db.refillOPKs(userId, oneTimePreKeys);
+    if (remainingCount === null) {
+      res.status(404).json({ error: `Requested identity '${userId}' does not exist.` });
+      return;
+    }
     res.status(200).json({
       status: 'success',
       message: `Refilled ${oneTimePreKeys.length} OPKs successfully.`,
       remainingOPKs: remainingCount
     });
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Failed to refill prekeys: ${errorMsg}` });
+    console.error('Failed to refill prekeys:', err);
+    res.status(500).json({ error: 'Internal server error while refilling prekeys.' });
   }
 });
 
@@ -108,10 +135,13 @@ app.post('/api/messages/send', (req: Request, res: Response): void => {
   const senderId = normalizeValidUserId(req.body?.senderId);
   const recipientId = normalizeValidUserId(req.body?.recipientId);
   const encryptedEnvelope = req.body?.encryptedEnvelope;
-  const timestamp = typeof req.body?.timestamp === 'number' ? req.body.timestamp : Date.now();
+  const timestamp =
+    typeof req.body?.timestamp === 'number' && Number.isFinite(req.body.timestamp)
+      ? req.body.timestamp
+      : Date.now();
 
-  if (!senderId || !recipientId || !encryptedEnvelope) {
-    res.status(400).json({ error: 'Valid senderId, recipientId, and encryptedEnvelope are required.' });
+  if (!senderId || !recipientId || !isPlainObject(encryptedEnvelope)) {
+    res.status(400).json({ error: 'Valid senderId, recipientId, and encryptedEnvelope object are required.' });
     return;
   }
 
@@ -135,8 +165,8 @@ app.post('/api/messages/send', (req: Request, res: Response): void => {
     db.enqueueOfflineMessage(recipientId, senderId, JSON.stringify(encryptedEnvelope));
     res.status(200).json({ status: 'queued_offline', timestamp: Date.now() });
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Failed to relay message: ${errorMsg}` });
+    console.error('Failed to relay message:', err);
+    res.status(500).json({ error: 'Internal server error while relaying message.' });
   }
 });
 
@@ -150,8 +180,8 @@ app.get('/api/users', (_req: Request, res: Response): void => {
     }));
     res.status(200).json(result);
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Failed to list users: ${errorMsg}` });
+    console.error('Failed to list users:', err);
+    res.status(500).json({ error: 'Internal server error while listing users.' });
   }
 });
 
@@ -211,8 +241,8 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
         // Bind sender strictly to authenticated socket userId to prevent sender spoofing
         const normalizedSenderId = userId;
         const normalizedRecipientId = normalizeValidUserId(envelope.recipientId);
-        if (!normalizedRecipientId) {
-          ws.send(JSON.stringify({ error: 'Invalid recipientId.' }));
+        if (!normalizedRecipientId || !isPlainObject(envelope.encryptedEnvelope)) {
+          ws.send(JSON.stringify({ error: 'Invalid recipientId or encryptedEnvelope payload.' }));
           return;
         }
         const recipientSocket = connectedClients.get(normalizedRecipientId);
